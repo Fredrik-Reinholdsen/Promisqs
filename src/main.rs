@@ -1,5 +1,4 @@
 use promisqs::queue::ShmemQueue;
-use std::thread;
 use std::time::Instant;
 
 fn main() {
@@ -15,8 +14,8 @@ fn main() {
     let v = [1_u8; 1024];
     while t0.elapsed().as_secs() < 5 {
         q.push(&v).unwrap();
-        q.pop().unwrap();
+        let _ = q.pop().unwrap();
         cnt += 1;
     }
-    println!("Performed {} MOps/sec", cnt as f64 * 2.0 * 1e-6);
+    println!("Performed {} MOps/sec", cnt as f64 * 2.0 * 1e-6 / 5.0);
 }

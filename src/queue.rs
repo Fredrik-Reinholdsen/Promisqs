@@ -13,7 +13,6 @@ pub type PromisqsResult<T> = Result<T, PromisqsError>;
 pub(crate) struct SharedMemory {
     // Flag that signifies if the shared memory queue has been initialized
     is_init: AtomicBool,
-    lock: AtomicBool,
     ref_cnt: AtomicU64,
     // Serialized size of each queue element in bytes
     element_size: AtomicU64,
@@ -100,7 +99,6 @@ impl<'q, T: AsBytes + FromBytes> ShmemQueue<'q, T> {
         let shmem = unsafe { &*(ptr as *const _ as *const SharedMemory) };
         shmem.ref_cnt.store(1, Ordering::Relaxed);
         shmem.element_size.store(element_size, Ordering::Relaxed);
-        shmem.lock.store(false, Ordering::Relaxed);
         shmem.capacity.store(capacity as u64, Ordering::Relaxed);
         shmem.read_offset.store(0, Ordering::Relaxed);
         shmem.write_offset.store(0, Ordering::Relaxed);
