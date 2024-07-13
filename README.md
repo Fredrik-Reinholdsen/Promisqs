@@ -12,7 +12,7 @@ This is roughly is 2-3 times faster than D-Bus, and more than an order of magnit
 ## Safety
 Since the shared memory queue is usually accessed from a whole different process/program than the one that instantiated it,
 the compiler cannot make any guarantees about the type of the queue elements being what you think it is. 
-So it is up to *you* the programmer to ensure that the type is correct when opening a shared memory que
+So it is up to *you* the programmer to ensure that the type is correct when opening a shared memory queue
 
 When attaching to an already open queue, the size of the defined element type is compared to the size of elements in the queue.
 This may catch some errors, like for example attaching to a queue with a defined type of `f64`, but the queue elements are actually `f32`.
