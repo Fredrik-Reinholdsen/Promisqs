@@ -87,7 +87,7 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// # use promisqs::ShmemQueue;
     /// let mut q = ShmemQueue::<u32>::create("flink.map", 10).unwrap();
     /// # drop(q);
-    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    /// # std::thread::sleep(std::time::Duration::from_millis(5000));
     ///```
     pub fn create(flink: &str, capacity: usize) -> PromisqsResult<Self> {
         // Calculate the size of T in bytes and the size memory required
@@ -136,7 +136,7 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// let mut q = ShmemQueue::<u32>::open("flink.map").unwrap();
     /// # drop(q);
     /// # drop(_q);
-    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    /// # std::thread::sleep(std::time::Duration::from_millis(5000));
     ///
     ///```
     pub fn open(flink: &str) -> PromisqsResult<Self> {
@@ -199,7 +199,7 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// assert_eq!(q.len(), 1);
     ///
     /// # drop(q);
-    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    /// # std::thread::sleep(std::time::Duration::from_millis(5000));
     ///```
     pub fn len(&self) -> usize {
         self.shmem.end - self.shmem.head
@@ -215,7 +215,7 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// assert_eq!(q.capacity(), 10);
     ///
     /// # drop(q);
-    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    /// # std::thread::sleep(std::time::Duration::from_millis(5000));
     ///```
     pub fn capacity(&self) -> usize {
         self.shmem.capacity
@@ -231,7 +231,7 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// assert!(q.is_full());
     ///
     /// # drop(q);
-    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    /// # std::thread::sleep(std::time::Duration::from_millis(5000));
     ///```
     pub fn is_full(&self) -> bool {
         self.len() == self.capacity()
@@ -247,7 +247,7 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// assert_eq!(q.is_empty(), false);
     ///
     /// # drop(q);
-    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    /// # std::thread::sleep(std::time::Duration::from_millis(5000));
     ///```
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -277,7 +277,7 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// assert_eq!(q.is_empty(), false);
     ///
     /// # drop(q);
-    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    /// # std::thread::sleep(std::time::Duration::from_millis(5000));
     ///```
     pub fn try_push(&mut self, t: &T) -> PromisqsResult<()> {
         self.try_lock()?;
@@ -316,7 +316,7 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// assert!(q.push(&1).is_err());
     ///
     /// # drop(q);
-    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    /// # std::thread::sleep(std::time::Duration::from_millis(5000));
     ///```
     pub fn push(&mut self, t: &T) -> PromisqsResult<()> {
         // If another process manages write in between bounds checking
@@ -356,7 +356,7 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// assert_eq!(q.is_empty(), true);
     ///
     /// # drop(q);
-    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    /// # std::thread::sleep(std::time::Duration::from_millis(5000));
     ///```
     pub fn try_pop(&mut self) -> PromisqsResult<Option<T>> {
         self.try_lock()?;
@@ -397,7 +397,7 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// assert_eq!(q.pop(), None);
     ///
     /// # drop(q);
-    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    /// # std::thread::sleep(std::time::Duration::from_millis(5000));
     ///```
     pub fn pop(&mut self) -> Option<T> {
         // If another process manages write in between bounds checking
@@ -433,7 +433,7 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// assert_eq!(q.is_empty(), false);
     ///
     /// # drop(q);
-    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    /// # std::thread::sleep(std::time::Duration::from_millis(5000));
     ///```
     pub fn try_peek(&self) -> PromisqsResult<Option<T>> {
         self.try_lock()?;
@@ -472,7 +472,7 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// assert_eq!(q.peek(), None);
     ///
     /// # drop(q);
-    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    /// # std::thread::sleep(std::time::Duration::from_millis(5000));
     ///```
     pub fn peek(&self) -> Option<T> {
         loop {

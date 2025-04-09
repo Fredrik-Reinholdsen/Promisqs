@@ -5,7 +5,7 @@ version = "1.0.0"
 edition = "2021"
 repository = "https://github.com/Fredrik-Reinholdsen/Promisqs"
 description = "An ultra-low latency, cross-platform shared memory queue implementation for IPC"
-keywords = ["queue", "mpmc", "shared", "memory", "ipc", "process", "thread"]
+keywords = ["queue", "mpmc", "shared", "memory", "ipc"]
 license = "Apache-2.0"
 readme = "README.md"
 

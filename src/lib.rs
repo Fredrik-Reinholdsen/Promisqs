@@ -38,7 +38,7 @@
 //! q.push(&msg).unwrap();
 //!
 //! # drop(q);
-//! # std::thread::sleep(std::time::Duration::from_millis(2000));
+//! # std::thread::sleep(std::time::Duration::from_millis(5000));
 //! ```
 //! # Consumer Example (different process)
 //! ```
@@ -65,7 +65,7 @@
 //!
 //! # drop(_q);
 //! # drop(q);
-//! # std::thread::sleep(std::time::Duration::from_millis(2000));
+//! # std::thread::sleep(std::time::Duration::from_millis(5000));
 //! ```
 
 pub mod error;
