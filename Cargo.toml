@@ -1,16 +1,23 @@
 [package]
 name = "promisqs"
-version = "0.2.0"
+authors = ["Fredrik Reinholdsen <fredrik.reinholdsen@gmail.com>"]
+version = "1.0.0"
 edition = "2021"
+repository = "https://github.com/Fredrik-Reinholdsen/Promisqs"
+description = "An ultra-low latency, cross-platform shared memory queue implementation for IPC"
+keywords = ["queue", "mpmc", "shared", "memory", "ipc", "process", "thread"]
+license = "Apache-2.0"
+readme = "README.md"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[badges]
+travis-ci = { repository = "manuel-woelker/rust-vfs", branch = "master" }
 
 [dependencies]
 raw_sync = "0.1.5"
 serde = "1.0.204"
 shared_memory = "0.12.4"
 thiserror = "1.0.38"
-zerocopy = "0.6.1"
+zerocopy = {version = "0.8.23", features = ["derive"]}
 
 [dev-dependencies]
 chrono = "0.4.38"

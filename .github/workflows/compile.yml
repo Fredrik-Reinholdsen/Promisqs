@@ -1,0 +1,48 @@
+name: Continuous integration
+
+on: [push, pull_request, workflow_dispatch]
+
+env:
+    CARGO_TERM_COLOR: always
+
+jobs:
+    ci:
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix:
+                rust:
+                    - stable
+                    - beta
+                    - nightly
+
+        steps:
+            - uses: actions/checkout@v2
+
+            - uses: actions-rs/toolchain@v1
+              with:
+                  profile: minimal
+                  toolchain: ${{ matrix.rust }}
+                  override: true
+                  components: rustfmt, clippy
+
+            - uses: actions-rs/cargo@v1
+              with:
+                  command: build
+
+            - uses: actions-rs/cargo@v1
+              with:
+                  command: test
+                  args: --all-features
+
+            - uses: actions-rs/cargo@v1
+              if: matrix.rust == 'stable' # only perform format check on stable
+              with:
+                  command: fmt
+                  args: --all -- --check
+
+            - uses: actions-rs/cargo@v1
+              if: matrix.rust == 'stable' # only perform format check on stable
+              with:
+                  command: clippy
+                  args: --all-features -- -D warnings -A renamed-and-removed-lints

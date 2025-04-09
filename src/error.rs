@@ -12,9 +12,5 @@ pub enum PromisqsError {
     #[error("Push failed, queue is full!")]
     QueueFull,
     #[error("Queue is empty!")]
-    QueueEmpty,
-    #[error("Compare exhange failed!")]
     WouldBlock,
-    #[error("No lock acquired!")]
-    LockNotAcquired,
 }

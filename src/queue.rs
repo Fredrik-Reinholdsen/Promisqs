@@ -2,7 +2,7 @@ use crate::error::PromisqsError;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use shared_memory as shmem;
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 pub type PromisqsResult<T> = Result<T, PromisqsError>;
 
@@ -11,43 +11,45 @@ pub type PromisqsResult<T> = Result<T, PromisqsError>;
 #[repr(C, align(8))]
 #[derive(Debug)]
 struct SharedMemory {
-    // Flag that signifies if the shared memory queue has been initialized
+    /// Flag that signifies if the shared memory queue has been initialized
     is_init: AtomicBool,
-    // Write lock
+    /// Write lock
     lock: AtomicBool,
     ref_cnt: AtomicU64,
-    // Serialized size of each queue element in bytes
+    /// Serialized size of each queue element in bytes
     element_size: usize,
     capacity: usize,
-    // Offset from where the next data should be read
+    /// Offset from where the next data should be read
     head: usize,
-    // Offset from where the next data should be inserted
-    // Thus the length of the queue is end - head
+    /// Offset from where the next data should be inserted
+    /// Thus the length of the queue is end - head
     end: usize,
 }
 
-pub struct ShmemQueue<'q, T: AsBytes + FromBytes> {
-    // Marks the type of the queue
+/// Generic instance of shared memory queue, with internal references
+/// to underlying shared memory.
+pub struct ShmemQueue<'q, T: FromBytes + IntoBytes + Immutable> {
+    /// Marks the type of the queue
     _marker: std::marker::PhantomData<T>,
-    // Memmap shared memory object
+    /// Memmap shared memory object
     mmap: shmem::Shmem,
-    // Size of the shared memory portion used for the queue
+    /// Size of the shared memory portion used for the queue
     data_size: u64,
-    // A reference to the header data in shared memory
+    /// A reference to the header data in shared memory
     shmem: &'q mut SharedMemory,
-    // Pointer to the base of the queue
+    /// Pointer to the base of the queue
     data_ptr: *mut T,
-    // The size of each element of the queue in bytes
+    /// The size of each element of the queue in bytes
     element_size: usize,
 }
 
-unsafe impl<'q, T: Send + AsBytes + FromBytes> Send for ShmemQueue<'q, T> {}
-unsafe impl<'q, T: Send + AsBytes + FromBytes> Sync for ShmemQueue<'q, T> {}
+unsafe impl<T: Send + FromBytes + IntoBytes + Immutable> Send for ShmemQueue<'_, T> {}
+unsafe impl<T: Send + FromBytes + IntoBytes + Immutable> Sync for ShmemQueue<'_, T> {}
 
-// Dropping decrements the sender reference counter.
-// If the instance to be dropped is the last sender or receiver
-// then the shared memory will be dropped to
-impl<'q, T: AsBytes + FromBytes> Drop for ShmemQueue<'q, T> {
+/// Dropping a queue instance decrements the sender reference counter.
+/// If the instance to be dropped is the last alive instance,
+/// then the shared memory will be cleaned up too.
+impl<T: FromBytes + IntoBytes + Immutable> Drop for ShmemQueue<'_, T> {
     fn drop(&mut self) {
         let n_ref = self.shmem.ref_cnt.fetch_sub(1, Ordering::SeqCst);
         if n_ref == 1 {
@@ -57,9 +59,9 @@ impl<'q, T: AsBytes + FromBytes> Drop for ShmemQueue<'q, T> {
     }
 }
 
-// On clone we must increase the Atomic Referece Counter
-// in shared memory
-impl<'q, T: AsBytes + FromBytes> Clone for ShmemQueue<'q, T> {
+/// On clone we must increase the Atomic Referece Counter
+/// in shared memory
+impl<T: FromBytes + IntoBytes + Immutable> Clone for ShmemQueue<'_, T> {
     fn clone(&self) -> Self {
         let mmap_clone = shmem::ShmemConf::new()
             .flink(self.mmap.get_flink_path().unwrap())
@@ -71,16 +73,22 @@ impl<'q, T: AsBytes + FromBytes> Clone for ShmemQueue<'q, T> {
         Self {
             mmap: mmap_clone,
             shmem: shmem_clone,
-            data_ptr: self.data_ptr.clone(),
-            element_size: self.element_size.clone(),
-            data_size: self.data_size.clone(),
+            data_ptr: self.data_ptr,
+            element_size: self.element_size,
+            data_size: self.data_size,
             _marker: self._marker,
         }
     }
 }
 
-impl<'q, T: AsBytes + FromBytes> ShmemQueue<'q, T> {
-    // Create a new shared memory queue from a capacity and flink
+impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
+    /// Create a new shared memory queue with a fixed capacity to specified path.
+    ///```
+    /// # use promisqs::ShmemQueue;
+    /// let mut q = ShmemQueue::<u32>::create("flink.map", 10).unwrap();
+    /// # drop(q);
+    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    ///```
     pub fn create(flink: &str, capacity: usize) -> PromisqsResult<Self> {
         // Calculate the size of T in bytes and the size memory required
         let t_size = std::mem::size_of::<T>();
@@ -102,7 +110,7 @@ impl<'q, T: AsBytes + FromBytes> ShmemQueue<'q, T> {
         shmem.end = 0;
         shmem.is_init.store(true, Ordering::SeqCst);
 
-        let data_ptr = unsafe { ptr.add(head_size as usize) as *mut _ as *mut T };
+        let data_ptr = unsafe { ptr.add(head_size) as *mut _ as *mut T };
 
         let s = Self {
             _marker: std::marker::PhantomData,
@@ -115,12 +123,27 @@ impl<'q, T: AsBytes + FromBytes> ShmemQueue<'q, T> {
         // Mark the shared memory as initialized
         Ok(s)
     }
-    /// Open and link up to an already created shared memory queue using file
+    /// Open and link up to an already initialize shared memory queue using file handle.
+    ///
+    /// **NOTE** - It is up to the user tp ensure that the queue type is correct,
+    /// as this cannot be ensured at compile time. Some basic checks, like checking
+    /// that the element size of the type matches are done, but this would for example not catch
+    /// if a queue was created with type `f32`, and then opened in a different process/thread as
+    /// `u32`, since the element size is the same.
+    ///```
+    /// # use promisqs::ShmemQueue;
+    /// # let _q = ShmemQueue::<u32>::create("flink.map", 10).unwrap();
+    /// let mut q = ShmemQueue::<u32>::open("flink.map").unwrap();
+    /// # drop(q);
+    /// # drop(_q);
+    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    ///
+    ///```
     pub fn open(flink: &str) -> PromisqsResult<Self> {
         let mmap = shmem::ShmemConf::new().flink(flink).open()?;
         let ptr = mmap.as_ptr();
         let shmem = unsafe { &mut *(ptr as *mut _ as *mut SharedMemory) };
-        if shmem.is_init.load(Ordering::Acquire) != true {
+        if !shmem.is_init.load(Ordering::Acquire) {
             return Err(PromisqsError::BufferNotInitialized);
         }
         shmem.ref_cnt.fetch_add(1, Ordering::Release);
@@ -151,63 +174,111 @@ impl<'q, T: AsBytes + FromBytes> ShmemQueue<'q, T> {
         Ok(s)
     }
 
-    fn lock(&self) {
-        while let Err(_) = self.try_lock() {}
-    }
-
-    fn unlock(&self) -> Result<(), PromisqsError> {
-        match self.shmem.lock.compare_exchange_weak(
-            true,
-            false,
-            Ordering::Acquire,
-            Ordering::Relaxed,
-        ) {
-            Ok(true) => return Ok(()),
-            _ => return Err(PromisqsError::LockNotAcquired),
-        }
+    fn unlock(&self) {
+        self.shmem.lock.store(false, Ordering::Release);
     }
 
     fn try_lock(&self) -> PromisqsResult<()> {
-        match self.shmem.lock.compare_exchange_weak(
-            false,
-            true,
-            Ordering::Acquire,
-            Ordering::Relaxed,
-        ) {
-            Ok(false) => return Ok(()),
-            _ => return Err(PromisqsError::WouldBlock),
+        match self
+            .shmem
+            .lock
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        {
+            Ok(false) => Ok(()),
+            _ => Err(PromisqsError::WouldBlock),
         }
     }
 
-    // Returns the number of items currently on the shared memory queue
+    /// Returns the number of elements/items currently on the shared memory queue
+    ///```
+    /// # use promisqs::ShmemQueue;
+    /// let mut q = ShmemQueue::<u32>::create("flink.map", 10).unwrap();
+    ///
+    /// assert_eq!(q.len(), 0);
+    /// assert!(q.push(&0).is_ok());
+    /// assert_eq!(q.len(), 1);
+    ///
+    /// # drop(q);
+    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    ///```
     pub fn len(&self) -> usize {
         self.shmem.end - self.shmem.head
     }
 
-    // Gets the total capacity of the queue
+    /// Returns the total number of elements that could be held by the queue.
+    /// This capacity is fixed and cannot be increased after initialization.
+    ///```
+    /// # use promisqs::ShmemQueue;
+    /// let mut q = ShmemQueue::<u32>::create("flink.map", 10).unwrap();
+    ///
+    /// assert_eq!(q.len(), 0);
+    /// assert_eq!(q.capacity(), 10);
+    ///
+    /// # drop(q);
+    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    ///```
     pub fn capacity(&self) -> usize {
         self.shmem.capacity
     }
 
-    // Returns whether or not there is any space left in the queue
+    /// Returns true if the queue is full
+    ///```
+    /// # use promisqs::ShmemQueue;
+    /// let mut q = ShmemQueue::<u32>::create("flink.map", 1).unwrap();
+    ///
+    /// assert_eq!(q.len(), 0);
+    /// assert!(q.push(&0).is_ok());
+    /// assert!(q.is_full());
+    ///
+    /// # drop(q);
+    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    ///```
     pub fn is_full(&self) -> bool {
         self.len() == self.capacity()
     }
 
-    // Checks if the queue is empty
+    /// Returns true if the queue is empty
+    ///```
+    /// # use promisqs::ShmemQueue;
+    /// let mut q = ShmemQueue::<u32>::create("flink.map", 10).unwrap();
+    ///
+    /// assert_eq!(q.is_empty(), true);
+    /// assert!(q.push(&0).is_ok());
+    /// assert_eq!(q.is_empty(), false);
+    ///
+    /// # drop(q);
+    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    ///```
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Tries to push an element to the queue in a non-blocking manner
     /// meaning if the first attempt at acquiring the lock for the queue fails
-    /// then this function will return a WouldBlock error.
-    /// is returned instead of trying again. This might happen if two
-    /// separate threads/processes are trying to push to the queue at the same time.
+    /// then this function will return a WouldBlock error
+    /// is returned instead of trying again.
     ///
-    /// If there is only one producer then this function will never fail.
+    /// This might happen if two separate threads/processes are trying to push to the queue at the same time.
     ///
-    /// Since it is non-blocking, this function is a fixed time operation.
+    /// If there is only one producer then this function will never block, but may still fail if
+    /// queue is full
+    ///```
+    /// # use promisqs::{ShmemQueue, PromisqsError};
+    /// let mut q = ShmemQueue::<u32>::create("flink.map", 10).unwrap();
+    ///
+    /// assert_eq!(q.is_empty(), true);
+    /// match q.push(&0) {
+    ///     Ok(()) => assert_eq!(q.is_empty(), false),
+    ///     Err(e) => match e {
+    ///         PromisqsError::WouldBlock => {},
+    ///         _ => panic!("Incorrect error type!?"),
+    ///     }
+    /// }
+    /// assert_eq!(q.is_empty(), false);
+    ///
+    /// # drop(q);
+    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    ///```
     pub fn try_push(&mut self, t: &T) -> PromisqsResult<()> {
         self.try_lock()?;
         unsafe {
@@ -215,17 +286,17 @@ impl<'q, T: AsBytes + FromBytes> ShmemQueue<'q, T> {
             let head = self.shmem.head;
             let len = end - head;
             if len == self.shmem.capacity {
-                self.unlock().unwrap();
+                self.unlock();
                 return Err(PromisqsError::QueueFull);
             }
             let offset = end % self.capacity();
-            let w_ptr = self.data_ptr.clone().add(offset) as *mut _ as *mut u8;
+            let w_ptr = self.data_ptr.add(offset) as *mut _ as *mut u8;
             t.as_bytes()
                 .iter()
                 .enumerate()
                 .for_each(|(i, b)| *w_ptr.add(i) = *b);
             self.shmem.end += 1;
-            self.unlock().unwrap();
+            self.unlock();
             Ok(())
         }
     }
@@ -237,10 +308,20 @@ impl<'q, T: AsBytes + FromBytes> ShmemQueue<'q, T> {
     ///
     /// If there is only one thread/process that is pushing items
     /// then this function is a fixed time operation and will not block.
+    ///```
+    /// # use promisqs::{ShmemQueue};
+    /// let mut q = ShmemQueue::<u32>::create("flink.map", 1).unwrap();
+    ///
+    /// assert!(q.push(&0).is_ok());
+    /// assert!(q.push(&1).is_err());
+    ///
+    /// # drop(q);
+    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    ///```
     pub fn push(&mut self, t: &T) -> PromisqsResult<()> {
         // If another process manages write in between bounds checking
         // and offset update we simply try again
-        // This is also effectivley ABA safe since the write offset is only
+        // This is also effectively ABA safe since the write offset is only
         // incremented and never decremented
         loop {
             match self.try_push(t) {
@@ -258,6 +339,25 @@ impl<'q, T: AsBytes + FromBytes> ShmemQueue<'q, T> {
     /// an Ok(None) is returned instead.
     ///
     /// If only one process/thread is reading from the queue then this function is infallible.
+    ///```
+    /// # use promisqs::{ShmemQueue, PromisqsError};
+    /// let mut q = ShmemQueue::<u32>::create("flink.map", 10).unwrap();
+    ///
+    /// assert_eq!(q.is_empty(), true);
+    /// assert!(q.push(&0).is_ok());
+    /// assert_eq!(q.is_empty(), false);
+    /// match q.try_pop() {
+    ///     Ok(opt) => assert_eq!(opt, Some(0)),
+    ///     Err(e) => match e {
+    ///         PromisqsError::WouldBlock => {},
+    ///         _ => panic!("Incorrect error type!?"),
+    ///     }
+    /// }
+    /// assert_eq!(q.is_empty(), true);
+    ///
+    /// # drop(q);
+    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    ///```
     pub fn try_pop(&mut self) -> PromisqsResult<Option<T>> {
         self.try_lock()?;
         unsafe {
@@ -265,14 +365,14 @@ impl<'q, T: AsBytes + FromBytes> ShmemQueue<'q, T> {
             let end = self.shmem.end;
             // Queue is empty
             if head == end {
-                self.unlock().unwrap();
+                self.unlock();
                 return Ok(None);
             }
-            let r_ptr = self.data_ptr.clone().add(head % self.shmem.capacity) as *mut _ as *mut u8;
-            let s = std::slice::from_raw_parts(r_ptr, self.element_size as usize);
-            let t = FromBytes::read_from(s).unwrap();
+            let r_ptr = self.data_ptr.add(head % self.shmem.capacity) as *mut _ as *mut u8;
+            let s = std::slice::from_raw_parts(r_ptr, self.element_size);
+            let t = FromBytes::read_from_bytes(s).unwrap();
             self.shmem.head += 1;
-            self.unlock().unwrap();
+            self.unlock();
             Ok(Some(t))
         }
     }
@@ -284,6 +384,21 @@ impl<'q, T: AsBytes + FromBytes> ShmemQueue<'q, T> {
     ///
     /// If there is only one thread/process that is reading items
     /// then this function is a fixed time operation and will not block.
+    ///```
+    /// # use promisqs::{ShmemQueue, PromisqsError};
+    /// let mut q = ShmemQueue::<u32>::create("flink.map", 10).unwrap();
+    ///
+    /// assert_eq!(q.is_empty(), true);
+    /// assert!(q.push(&0).is_ok());
+    /// assert_eq!(q.is_empty(), false);
+    ///
+    /// assert_eq!(q.pop(), Some(0));
+    /// assert_eq!(q.is_empty(), true);
+    /// assert_eq!(q.pop(), None);
+    ///
+    /// # drop(q);
+    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    ///```
     pub fn pop(&mut self) -> Option<T> {
         // If another process manages write in between bounds checking
         // and offset update we simply try again
@@ -299,7 +414,27 @@ impl<'q, T: AsBytes + FromBytes> ShmemQueue<'q, T> {
         }
     }
 
-    /// Peeks the item that is next in the queue without popping it
+    /// Peeks at the next item that is next in the queue without popping it
+    ///```
+    /// # use promisqs::{ShmemQueue, PromisqsError};
+    /// let mut q = ShmemQueue::<u32>::create("flink.map", 10).unwrap();
+    ///
+    /// assert_eq!(q.is_empty(), true);
+    /// assert!(q.push(&0).is_ok());
+    /// assert_eq!(q.is_empty(), false);
+    ///
+    /// match q.try_peek() {
+    ///     Ok(opt) => assert_eq!(opt, Some(0)),
+    ///     Err(e) => match e {
+    ///         PromisqsError::WouldBlock => {},
+    ///         _ => panic!("Incorrect error type?!"),
+    ///     }
+    /// }
+    /// assert_eq!(q.is_empty(), false);
+    ///
+    /// # drop(q);
+    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    ///```
     pub fn try_peek(&self) -> PromisqsResult<Option<T>> {
         self.try_lock()?;
         unsafe {
@@ -307,13 +442,13 @@ impl<'q, T: AsBytes + FromBytes> ShmemQueue<'q, T> {
             let end = self.shmem.end;
             // Queue is empty
             if head == end {
-                self.unlock().unwrap();
+                self.unlock();
                 return Ok(None);
             }
-            let r_ptr = self.data_ptr.clone().add(head % self.shmem.capacity) as *mut _ as *mut u8;
-            let s = std::slice::from_raw_parts(r_ptr, self.element_size as usize);
-            let t = FromBytes::read_from(s).unwrap();
-            self.unlock().unwrap();
+            let r_ptr = self.data_ptr.add(head % self.shmem.capacity) as *mut _ as *mut u8;
+            let s = std::slice::from_raw_parts(r_ptr, self.element_size);
+            let t = FromBytes::read_from_bytes(s).unwrap();
+            self.unlock();
             Ok(Some(t))
         }
     }
@@ -322,6 +457,23 @@ impl<'q, T: AsBytes + FromBytes> ShmemQueue<'q, T> {
     ///
     /// If there is only one process/thread reading from the queue, then this function
     /// is fixed time and will never fail.
+    ///```
+    /// # use promisqs::{ShmemQueue, PromisqsResult};
+    /// let mut q = ShmemQueue::<u32>::create("flink.map", 10).unwrap();
+    ///
+    /// assert_eq!(q.is_empty(), true);
+    /// assert!(q.push(&0).is_ok());
+    /// assert_eq!(q.is_empty(), false);
+    ///
+    /// assert_eq!(q.peek(), Some(0));
+    /// assert_eq!(q.is_empty(), false);
+    ///
+    /// assert_eq!(q.pop(), Some(0));
+    /// assert_eq!(q.peek(), None);
+    ///
+    /// # drop(q);
+    /// # std::thread::sleep(std::time::Duration::from_millis(2000));
+    ///```
     pub fn peek(&self) -> Option<T> {
         loop {
             match self.try_peek() {
@@ -334,7 +486,7 @@ impl<'q, T: AsBytes + FromBytes> ShmemQueue<'q, T> {
     }
 }
 
-impl<'q, T: AsBytes + FromBytes> Iterator for ShmemQueue<'q, T> {
+impl<T: FromBytes + IntoBytes + Immutable> Iterator for ShmemQueue<'_, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -345,11 +497,9 @@ impl<'q, T: AsBytes + FromBytes> Iterator for ShmemQueue<'q, T> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use chrono::{DateTime, Local};
-    use crossbeam_channel::{Receiver, Sender};
     use rand::distributions::{Alphanumeric, DistString};
     use std::path::Path;
-    use std::sync::{atomic::AtomicI64, Arc, Barrier};
+    use std::sync::{Arc, Barrier};
     use std::time::Duration;
 
     // Generates a random 16-byte alphanumeric string map name
@@ -363,14 +513,14 @@ mod test {
         let q: ShmemQueue<u32> = ShmemQueue::create(&q_file_name, 10).unwrap();
         let q_file = Path::new(&q_file_name);
         assert!(q_file.exists());
-        assert!(q.len() == 0);
+        assert!(q.is_empty());
         assert_eq!(q.capacity(), 10);
         assert_eq!(q.element_size, 4);
         assert_eq!(q.shmem.ref_cnt.load(Ordering::SeqCst), 1);
 
         let q_n: ShmemQueue<u32> = ShmemQueue::open(&q_file_name).unwrap();
         assert!(q_file.exists());
-        assert!(q.len() == 0);
+        assert!(q.is_empty());
         assert_eq!(q_n.capacity(), 10);
         assert_eq!(q_n.element_size, 4);
 
@@ -412,7 +562,7 @@ mod test {
     #[test]
     fn test_push_full() {
         let mut q: ShmemQueue<u32> = ShmemQueue::create(&gen_map_name(), 10).unwrap();
-        for item in (0..10).into_iter() {
+        for item in 0..10 {
             assert!(q.push(&item).is_ok());
         }
         assert!(q.push(&69).is_err());
@@ -464,7 +614,7 @@ mod test {
             let mut handles: Vec<std::thread::JoinHandle<()>> = Vec::with_capacity(N_THREADS);
             let barrier = Arc::new(Barrier::new(N_THREADS));
 
-            for i in (0..N_THREADS).into_iter() {
+            for i in 0..N_THREADS {
                 let q_file_name_clone = q_file_name.clone();
                 let barrier_clone = barrier.clone();
                 let h = std::thread::spawn(move || {
@@ -480,14 +630,9 @@ mod test {
             for handle in handles {
                 handle.join().unwrap();
             }
-            let vals: Vec<u64> = (0..N_THREADS)
-                .into_iter()
-                .map(|_| q.pop().unwrap())
-                .collect();
+            let vals: Vec<u64> = (0..N_THREADS).map(|_| q.pop().unwrap()).collect();
 
-            (0..N_THREADS)
-                .into_iter()
-                .for_each(|i| assert!(vals.contains(&(i as u64))));
+            (0..N_THREADS).for_each(|i| assert!(vals.contains(&(i as u64))));
 
             assert!(q.is_empty());
         }
