@@ -14,7 +14,6 @@ travis-ci = { repository = "manuel-woelker/rust-vfs", branch = "master" }
 
 [dependencies]
 raw_sync = "0.1.5"
-serde = "1.0.204"
 shared_memory = "0.12.4"
 thiserror = "1.0.38"
 zerocopy = {version = "0.8.23", features = ["derive"]}

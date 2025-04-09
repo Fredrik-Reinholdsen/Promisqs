@@ -97,7 +97,7 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
         let data_size = element_size * capacity;
         let head_size = std::mem::size_of::<SharedMemory>();
         let mmap = shmem::ShmemConf::new()
-            .size((data_size + head_size) as usize)
+            .size(data_size + head_size)
             .flink(flink)
             .create()?;
         let ptr = mmap.as_ptr();
@@ -159,7 +159,7 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
             return Err(PromisqsError::ElementSizeMismatch);
         }
 
-        let data_size = element_size as usize * shmem.capacity;
+        let data_size = element_size * shmem.capacity;
         let head_size = std::mem::size_of::<SharedMemory>();
         let data_ptr = unsafe { ptr.add(head_size) as *mut _ as *mut T };
 
