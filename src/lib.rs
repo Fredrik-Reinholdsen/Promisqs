@@ -13,6 +13,8 @@
 //! Most primitive types and other fixed size types, like enums, arrays etc.
 //! can be used with the queue. Dynamic types like strings or vectors cannot.
 //!
+//! **NOTE** - In order to implement these traits for your type, you must add [`zerocopy`](https://docs.rs/zerocopy/latest/zerocopy/) as a dependency to your crate.
+//!
 //! # Producer Example
 //!
 //! ```
@@ -38,7 +40,7 @@
 //! q.push(&msg).unwrap();
 //!
 //! # drop(q);
-//! # std::thread::sleep(std::time::Duration::from_millis(5000));
+//! # std::thread::sleep(std::time::Duration::from_millis(100));
 //! ```
 //! # Consumer Example (different process)
 //! ```
@@ -65,7 +67,7 @@
 //!
 //! # drop(_q);
 //! # drop(q);
-//! # std::thread::sleep(std::time::Duration::from_millis(5000));
+//! # std::thread::sleep(std::time::Duration::from_millis(100));
 //! ```
 
 pub mod error;
