@@ -1,4 +1,4 @@
-//! Promisqs (pronounced "promiscuous") is a cross-platform, shared memory,
+//! Promisqs (pronounced "promiscuous") is a lock-free, cross-platform, shared memory,
 //! multi-producer, multi-consumer queue implementation.
 //!
 //! The main use-case for this library is for ultra low latency inter-process communication (IPC),
@@ -20,7 +20,7 @@
 //! ```
 //! use promisqs::{ShmemQueue, IntoBytes, FromBytes, Immutable};
 //!
-//! // Define a struct that derives zerocopy traits,
+//! // Define a struct that derives `zerocopy` traits,
 //! // so that we can use it with promisqs queues
 //! #[derive(Debug, Clone, IntoBytes, FromBytes, Immutable, PartialEq)]
 //! pub struct Message {

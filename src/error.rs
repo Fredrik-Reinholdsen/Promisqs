@@ -11,6 +11,6 @@ pub enum PromisqsError {
     ElementSizeMismatch,
     #[error("Push failed, queue is full!")]
     QueueFull,
-    #[error("Queue is empty!")]
+    #[error("Queue operation failed first attempt!")]
     WouldBlock,
 }
