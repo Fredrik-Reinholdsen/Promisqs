@@ -1,4 +1,4 @@
-//! Promisqs (pronounced "promiscuous") is a lock-free, cross-platform, shared memory,
+//! Promisqs (pronounced "promiscuous") cross-platform, shared memory,
 //! multi-producer, multi-consumer queue implementation.
 //!
 //! The main use-case for this library is for ultra low latency inter-process communication (IPC),

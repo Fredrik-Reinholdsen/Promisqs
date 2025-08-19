@@ -1,5 +1,5 @@
 # Promisqs 
-Promisqs (pronounced _promiscuous_) provides a generic multi-producer, multi-consumer (MPMC), lock-free shared memory queue implementation in Rust.
+Promisqs (pronounced _promiscuous_) provides a generic multi-producer, multi-consumer (MPMC),shared memory queue implementation in Rust.
 
 Promisqs queues are useful for ultra low-latency and high throughput inter-process communication (IPC).
 The latency depends on your CPU and the element size, but for small element sizes (<10 kB),

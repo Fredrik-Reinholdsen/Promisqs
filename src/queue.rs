@@ -1,7 +1,7 @@
 use crate::error::PromisqsError;
 use std::{
     path::Path,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use shared_memory as shmem;
@@ -14,16 +14,19 @@ pub type PromisqsResult<T> = Result<T, PromisqsError>;
 #[repr(C, align(8))]
 #[derive(Debug)]
 struct SharedMemory {
+    /// Lock for the queue
+    lock: AtomicBool,
+    /// Atomic reference counter
     ref_cnt: AtomicU64,
     /// Serialized size of each queue element in bytes
     element_size: usize,
     ///  Total number of elements that can be stored on the queue
     capacity: u64,
     /// Offset from where the next data should be read
-    head: AtomicU64,
+    head: u64,
     /// Offset from where the next data should be inserted
     /// Thus the length of the queue is end - head
-    end: AtomicU64,
+    end: u64,
 }
 
 /// Generic instance of shared memory queue, with internal references
@@ -105,8 +108,9 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
         let shmem = unsafe { &mut *(ptr as *const _ as *mut SharedMemory) };
         shmem.element_size = element_size;
         shmem.capacity = capacity as u64;
-        shmem.head.store(0, Ordering::SeqCst);
-        shmem.end.store(0, Ordering::SeqCst);
+        shmem.head = 0;
+        shmem.end = 0;
+        shmem.lock.store(false, Ordering::SeqCst);
         shmem.ref_cnt.store(1, Ordering::SeqCst);
 
         let data_ptr = unsafe { ptr.add(head_size) as *mut _ as *mut T };
@@ -173,6 +177,21 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
         Ok(s)
     }
 
+    fn unlock(&self) {
+        self.shmem.lock.store(false, Ordering::Release);
+    }
+
+    fn try_lock(&self) -> PromisqsResult<()> {
+        match self
+            .shmem
+            .lock
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        {
+            Ok(false) => Ok(()),
+            _ => Err(PromisqsError::WouldBlock),
+        }
+    }
+
     /// Returns the number of elements/items currently on the shared memory queue
     ///```
     /// # use promisqs::ShmemQueue;
@@ -186,8 +205,8 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// # std::thread::sleep(std::time::Duration::from_millis(100));
     ///```
     pub fn len(&self) -> usize {
-        let head = self.shmem.head.load(Ordering::Relaxed);
-        let end = self.shmem.end.load(Ordering::Relaxed);
+        let head = self.shmem.head;
+        let end = self.shmem.end;
         end.wrapping_sub(head) as usize
     }
 
@@ -240,11 +259,10 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     }
 
     /// Tries to push an element to the queue in a non-blocking manner
-    /// meaning if the first attempt fails due to another thread/process pushing in between
-    /// then this function will return a WouldBlock error.
+    /// meaning if the first attempt fails due to another thread/process is pushing/popping,
+    /// then this function will return a `WouldBlock` error.
     ///
-    /// If there is only one producer then this function will never block, but will still fail if
-    /// queue is full.
+    /// Returns `QueueFull` error if the queue is full.
     ///```
     /// # use promisqs::{ShmemQueue, PromisqsError};
     /// let mut q = ShmemQueue::<u32>::create("flink.map", 10).unwrap();
@@ -262,35 +280,25 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// # drop(q);
     /// # std::thread::sleep(std::time::Duration::from_millis(100));
     ///```
-    pub fn try_push(&self, item: &T) -> PromisqsResult<()> {
-        let current_end = self.shmem.end.load(Ordering::Relaxed);
-        let next_end = current_end.wrapping_add(1);
-        let current_head = self.shmem.head.load(Ordering::Acquire);
-        let len = current_end.wrapping_sub(current_head);
-
-        if len >= self.shmem.capacity {
+    pub fn try_push(&mut self, t: &T) -> PromisqsResult<()> {
+        self.try_lock()?;
+        let end = self.shmem.end;
+        let head = self.shmem.head;
+        let len = end - head;
+        if len == self.shmem.capacity {
+            self.unlock();
             return Err(PromisqsError::QueueFull);
         }
-
-        match self.shmem.end.compare_exchange(
-            current_end,
-            next_end,
-            Ordering::Release,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => {
-                let write_index = current_end % self.shmem.capacity;
-                unsafe {
-                    let w_ptr = self.data_ptr.add(write_index as usize) as *mut _ as *mut u8;
-                    item.as_bytes()
-                        .iter()
-                        .enumerate()
-                        .for_each(|(i, b)| *w_ptr.add(i) = *b);
-                }
-
-                Ok(())
-            }
-            Err(_) => Err(PromisqsError::WouldBlock),
+        let offset = end % self.shmem.capacity;
+        unsafe {
+            let w_ptr = self.data_ptr.add(offset as usize) as *mut _ as *mut u8;
+            t.as_bytes()
+                .iter()
+                .enumerate()
+                .for_each(|(i, b)| *w_ptr.add(i) = *b);
+            self.shmem.end += 1;
+            self.unlock();
+            Ok(())
         }
     }
 
@@ -300,8 +308,6 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// due another thread/process pushing at the same time,
     /// it will simply retry until success.
     ///
-    /// If there is only one thread/process that is pushing items
-    /// then this function is a fixed time operation and will not block.
     ///```
     /// # use promisqs::{ShmemQueue};
     /// let mut q = ShmemQueue::<u32>::create("flink.map", 1).unwrap();
@@ -328,7 +334,7 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
 
     /// Tries to an pop and item from the queue in a non-blocking manner
     /// meaning if the first attempt at popping fails due to another thread/process
-    /// popping at the same time, a `WouldBlock` error is returned
+    /// pushing/popping at the same time, a `WouldBlock` error is returned
     ///
     /// No other errors are possible for this function is possible, and if the queue is empty
     /// an `Ok(None)` is returned instead.
@@ -353,28 +359,23 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// # drop(q);
     /// # std::thread::sleep(std::time::Duration::from_millis(100));
     ///```
-    pub fn try_pop(&self) -> PromisqsResult<Option<T>> {
-        let current_head = self.shmem.head.load(Ordering::Relaxed);
-        let current_end = self.shmem.end.load(Ordering::Acquire);
-        if current_head == current_end {
-            return Ok(None);
-        }
-        let next_head = current_head.wrapping_add(1);
-        let read_index = current_head % self.shmem.capacity;
-
-        match self.shmem.head.compare_exchange(
-            current_head,
-            next_head,
-            Ordering::Acquire,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => unsafe {
-                let r_ptr = self.data_ptr.add(read_index as usize) as *mut _ as *mut u8;
-                let s = std::slice::from_raw_parts(r_ptr, self.element_size);
-                let t = FromBytes::read_from_bytes(s).unwrap();
-                Ok(Some(t))
-            },
-            Err(_) => Err(PromisqsError::WouldBlock),
+    pub fn try_pop(&mut self) -> PromisqsResult<Option<T>> {
+        self.try_lock()?;
+        unsafe {
+            let head = self.shmem.head;
+            let end = self.shmem.end;
+            // Queue is empty
+            if head == end {
+                self.unlock();
+                return Ok(None);
+            }
+            let r_ptr =
+                self.data_ptr.add((head % self.shmem.capacity) as usize) as *mut _ as *mut u8;
+            let s = std::slice::from_raw_parts(r_ptr, self.element_size);
+            let t = FromBytes::read_from_bytes(s).unwrap();
+            self.shmem.head += 1;
+            self.unlock();
+            Ok(Some(t))
         }
     }
 
@@ -438,17 +439,19 @@ impl<T: FromBytes + IntoBytes + Immutable> ShmemQueue<'_, T> {
     /// # std::thread::sleep(std::time::Duration::from_millis(100));
     ///```
     pub fn try_peek(&self) -> PromisqsResult<Option<T>> {
+        self.try_lock()?;
+        if self.shmem.head == self.shmem.end {
+            self.unlock();
+            return Ok(None);
+        }
         unsafe {
-            let head = self.shmem.head.load(Ordering::Acquire);
-            let end = self.shmem.end.load(Ordering::Acquire);
-            // Queue is empty
-            if head == end {
-                return Ok(None);
-            }
-            let r_ptr =
-                self.data_ptr.add((head % self.shmem.capacity) as usize) as *mut _ as *mut u8;
+            let r_ptr = self
+                .data_ptr
+                .add((self.shmem.head % self.shmem.capacity) as usize)
+                as *mut _ as *mut u8;
             let s = std::slice::from_raw_parts(r_ptr, self.element_size);
             let t = FromBytes::read_from_bytes(s).unwrap();
+            self.unlock();
             Ok(Some(t))
         }
     }
@@ -554,12 +557,24 @@ mod test {
 
     #[test]
     fn test_push_and_pop() {
-        let mut q: ShmemQueue<u32> = ShmemQueue::create(&gen_map_name(), 10).unwrap();
-        assert!(q.push(&69).is_ok());
-        assert_eq!(q.shmem.end.load(Ordering::SeqCst), 1);
-        assert_eq!(q.shmem.head.load(Ordering::SeqCst), 0);
-        assert_eq!(q.pop(), Some(69));
-        assert_eq!(q.shmem.head.load(Ordering::SeqCst), 1);
+        let mut q: ShmemQueue<[u8; 8812]> = ShmemQueue::create(&gen_map_name(), 10).unwrap();
+        assert_eq!(q.element_size, 8812);
+        for i in 0..10 {
+            let buf = [i as u8; 8812];
+            assert_eq!(q.len(), i as usize);
+            assert_eq!(q.shmem.end, i);
+            assert!(q.push(&buf).is_ok());
+            assert_eq!(q.shmem.end, i + 1);
+            assert_eq!(q.shmem.head, 0);
+            assert_eq!(q.len(), i as usize + 1);
+        }
+        for i in 0..10 {
+            assert_eq!(q.shmem.head, i);
+            assert_eq!(q.len(), 10 - i as usize);
+            assert_eq!(q.pop().unwrap(), [i as u8; 8812]);
+            assert_eq!(q.shmem.head, i + 1);
+            assert_eq!(q.len(), 10 - i as usize - 1);
+        }
     }
 
     #[test]
@@ -610,9 +625,9 @@ mod test {
         let v1 = [255_u8; 1024];
         assert!(q.peek().is_none());
         q.push(&v1).unwrap();
-        assert_eq!(q.shmem.head.load(Ordering::SeqCst), 0);
+        assert_eq!(q.shmem.head, 0);
         assert_eq!(q.peek(), Some(v1));
-        assert_eq!(q.shmem.head.load(Ordering::SeqCst), 0);
+        assert_eq!(q.shmem.head, 0);
         assert_eq!(q.peek(), q.pop());
     }
 
